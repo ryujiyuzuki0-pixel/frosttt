@@ -1,0 +1,109 @@
+name: build
+
+on:
+  push:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Repairs a flat upload (files named build_gradle.kts, config.yml, *.java all in one folder)
+      # into the layout Gradle needs. Does nothing when the layout is already correct.
+      - name: Fix layout
+        run: |
+          place() {
+            [ -f "$2" ] && return 0
+            src=$(find . -name "$1" -not -path './.git/*' -not -path './build/*' | head -n1)
+            if [ -n "$src" ]; then
+              mkdir -p "$(dirname "$2")"
+              cp "$src" "$2"
+              echo "placed $src -> $2"
+            fi
+            return 0
+          }
+          place build_gradle.kts build.gradle.kts
+          place settings_gradle.kts settings.gradle.kts
+          place build_pack.py tools/build_pack.py
+          place reforged_frost_armor.bbmodel src/main/resources/models/reforged_frost_armor.bbmodel
+          place plugin.yml src/main/resources/plugin.yml
+          place config.yml src/main/resources/config.yml
+          for f in ArmorRig FrostCommand FrostItems PackHost ReforgedFrostPlugin SetBonus; do
+            place "$f.java" "src/main/java/dev/reforgedfrost/$f.java"
+          done
+          echo "--- project files ---"
+          find . -type f -not -path './.git/*' | sort | head -60
+
+      - name: Locate project
+        id: p
+        run: |
+          f=$(find . -name build.gradle.kts -not -path './.git/*' | head -n1)
+          if [ -z "$f" ]; then
+            echo "::error::build.gradle.kts not found."
+            exit 1
+          fi
+          echo "dir=$(dirname "$f")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build texture pack
+        working-directory: ${{ steps.p.outputs.dir }}
+        run: |
+          pip install pillow
+          python tools/build_pack.py
+          test -s src/main/resources/pack.zip
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Set pack URL
+        working-directory: ${{ steps.p.outputs.dir }}
+        run: sed -i "s#REPO_SLUG#${{ github.repository }}#" src/main/resources/config.yml
+
+      - name: Build
+        working-directory: ${{ steps.p.outputs.dir }}
+        run: gradle build --no-daemon
+
+      - name: Verify jar
+        working-directory: ${{ steps.p.outputs.dir }}
+        run: |
+          ls -l build/libs/
+          unzip -l build/libs/ReforgedFrost.jar | grep -E "pack.zip|plugin.yml|config.yml"
+
+      # single file only, so the artifact is just ReforgedFrost.jar (inside GitHub's own .zip wrapper)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReforgedFrost
+          path: ${{ steps.p.outputs.dir }}/build/libs/ReforgedFrost.jar
+
+      - name: Publish latest release
+        if: github.event_name == 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --cleanup-tag --yes || true
+          gh release create latest \
+            "${{ steps.p.outputs.dir }}/build/libs/ReforgedFrost.jar" \
+            "${{ steps.p.outputs.dir }}/src/main/resources/pack.zip" \
+            --title "Latest build" \
+            --notes "Auto-built from ${GITHUB_SHA::7}" \
+            --target "$GITHUB_SHA"
