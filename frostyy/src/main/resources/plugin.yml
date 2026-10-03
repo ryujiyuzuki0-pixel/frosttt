@@ -1,0 +1,14 @@
+name: ReforgedFrost
+version: '${version}'
+main: dev.reforgedfrost.ReforgedFrostPlugin
+api-version: '1.21'
+description: Reforged Frost animated 3D armor set with give command, set bonus and resource pack delivery
+softdepend: [MythicArmors]
+commands:
+  frost:
+    description: Reforged Frost admin command
+    usage: /frost <give|pack|view|status|rebuild|reload>
+    permission: reforgedfrost.admin
+permissions:
+  reforgedfrost.admin:
+    default: op
